@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Reflection;
 
 namespace Cewe2pdf {
 
@@ -11,6 +13,13 @@ namespace Cewe2pdf {
         private const string CONFIG_PATH = "config.txt";
 
         static void Main(string[] args) {
+            NativeLibrary.SetDllImportResolver(Assembly.GetExecutingAssembly(), (libraryName, assembly, searchPath) => {
+                if (libraryName == "libwebp_x64.dll" || libraryName == "libwebp_x86.dll")
+                    return NativeLibrary.Load("libwebp", assembly, searchPath);
+                if (libraryName == "kernel32.dll")
+                    return NativeLibrary.Load("libc", assembly, searchPath);
+                return IntPtr.Zero;
+            });
 
 #if DEBUG || _DEBUG
             Log.level = Log.Level.Info;

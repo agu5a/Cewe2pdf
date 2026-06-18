@@ -1,5 +1,6 @@
-﻿using System.Data.SQLite;
+﻿using Microsoft.Data.Sqlite;
 using System.Text;
+using SkiaSharp;
 
 namespace Cewe2pdf {
 
@@ -16,16 +17,16 @@ namespace Cewe2pdf {
 
         public byte[] getDataForFilename(string filename) {
             // Provide the path to your existing database
-            string connectionString = "Data Source=" + _filePath + ";Version=3;";
+            string connectionString = "Data Source=" + _filePath + ";";
 
             // Open the connection
-            using (SQLiteConnection conn = new SQLiteConnection(connectionString)) {
+            using (SqliteConnection conn = new SqliteConnection(connectionString)) {
                 conn.Open();
 
-                // Query the database (example: SELECT all rows from the Users table)
-                string selectQuery = "SELECT Data FROM Files WHERE Filename = '" + filename + "';"; // Replace "Users" with your table name
-                using (SQLiteCommand cmd = new SQLiteCommand(selectQuery, conn)) {
-                    using (SQLiteDataReader reader = cmd.ExecuteReader()) {
+                string selectQuery = "SELECT Data FROM Files WHERE Filename = @filename;";
+                using (SqliteCommand cmd = new SqliteCommand(selectQuery, conn)) {
+                    cmd.Parameters.AddWithValue("@filename", filename);
+                    using (var reader = cmd.ExecuteReader()) {
 
                         if (reader.Read()) {
                             // Read the BLOB data from the database
@@ -43,19 +44,18 @@ namespace Cewe2pdf {
             return null;
         }
 
-        public System.Drawing.Image getSystemImageForFilename(string filename) {
+        public SKBitmap getSystemImageForFilename(string filename) {
             byte[] blobData = getDataForFilename(filename);
             if (blobData == null) return null;
 
-            // for debugging, write extracted binary data to jpg file - should be valid to open in any image viewer
-            //using (var fileStream = new System.IO.FileStream("test_img.jpg", System.IO.FileMode.Create)) {
-            //    fileStream.Write(blobData, 0, blobData.Length);
-            //}
+            SKBitmap bm = SKBitmap.Decode(blobData);
+            if (bm == null) { Log.Error("SKBitmap.Decode returned null for '" + filename + "'."); return null; }
 
-            // construct an in-memory system image from binary data
-            using (var ms = new System.IO.MemoryStream(blobData)) {
-                return System.Drawing.Image.FromStream(ms);
-            }
+            // apply EXIF orientation from raw bytes
+            using var codec = SKCodec.Create(new System.IO.MemoryStream(blobData));
+            if (codec != null && codec.EncodedOrigin != SKEncodedOrigin.TopLeft && codec.EncodedOrigin != SKEncodedOrigin.Default)
+                bm = PdfWriter.ExifRotate(bm, codec.EncodedOrigin);
+            return bm;
         }
 
         public System.IO.MemoryStream getMcfFile() {

@@ -1,6 +1,7 @@
 ﻿using iTextSharp.awt.geom;
 using iTextSharp.text;
 using iTextSharp.text.pdf;
+using SkiaSharp;
 using System;
 using System.Dynamic;
 using System.IO;
@@ -39,17 +40,21 @@ namespace Cewe2pdf {
             // necessary for loading .ttf it seams
             System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
-            const string fontPath = "C:\\Windows\\Fonts"; // FIXME: windows only obviously
+            string fontPath = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? "C:\\Windows\\Fonts"
+                : System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX)
+                    ? "/Library/Fonts" : "/usr/share/fonts";
             Log.Info("Loading fonts from " + fontPath);
-            FontFactory.RegisterDirectory(fontPath);
+            if (System.IO.Directory.Exists(fontPath)) FontFactory.RegisterDirectory(fontPath);
 
-            string cwfontPath = Config.ProgramPath + "\\Resources\\photofun\\fonts";
+            string cwfontPath = System.IO.Path.Combine(Config.ProgramPath, "Resources", "photofun", "fonts");
             Log.Info("Loading fonts from " + cwfontPath);
             FontFactory.RegisterDirectory(cwfontPath);
 
             // recursivly search for fonts folders in full hps path
-            const string hpsPath = "C:\\ProgramData\\hps"; // FIXME ^^
-            if (System.IO.Directory.Exists(hpsPath)) {
+            string hpsPath = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? "C:\\ProgramData\\hps" : null;
+            if (!string.IsNullOrEmpty(hpsPath) && System.IO.Directory.Exists(hpsPath)) {
                 Log.Info("Searching for fonts directory at " + hpsPath);
                 string[] fontDirs = System.IO.Directory.GetDirectories(hpsPath, "fonts", System.IO.SearchOption.AllDirectories);
                 foreach (string dir in fontDirs) {
@@ -96,7 +101,7 @@ namespace Cewe2pdf {
                 canvas.Fill();
 
                 string id = pPage.backgroundLeft;
-                System.Drawing.Image sysImg = DesignIdConverter.getImageFromID(id);
+                SKBitmap sysImg = DesignIdConverter.getImageFromID(id);
                 if (sysImg == null) {
                     Log.Error("Background image for id '" + id + "' was null.");
 #if DEBUG || _DEBUG
@@ -139,7 +144,7 @@ namespace Cewe2pdf {
                 canvas.Fill();
 
                 string id = pPage.backgroundRight;
-                System.Drawing.Image sysImg = DesignIdConverter.getImageFromID(id);
+                SKBitmap sysImg = DesignIdConverter.getImageFromID(id);
                 if (sysImg == null) {
                     Log.Error("Background image for id '" + id + "' was null.");
 #if DEBUG || _DEBUG
@@ -182,7 +187,7 @@ namespace Cewe2pdf {
                 AffineTransform tf = new AffineTransform();
                 double angle = area.rotation * Math.PI / 180.0;
                 tf.Rotate(-angle, pX + area.rect.Width / 2f, pY + area.rect.Height / 2f); // rotate around center ccw                                                                      
-                canvas.Transform(tf);
+                canvas.ConcatCTM((float)tf.GetScaleX(), (float)tf.GetShearY(), (float)tf.GetShearX(), (float)tf.GetScaleY(), (float)tf.GetTranslateX(), (float)tf.GetTranslateY());
 
                 if (area is ImageArea || area is ImageBackgroundArea) {
                     // TODO: This is somewhat hacky - there is probably a better way to do this.
@@ -216,32 +221,33 @@ namespace Cewe2pdf {
                     }
 
                     // load image file.
-                    System.Drawing.Image sysImg;
+                    SKBitmap sysImg;
                     try {
                         sysImg = _mcfx.getSystemImageForFilename(imgArea.filename);
                     } catch (System.Exception e) {
-                        if (e is System.IO.FileNotFoundException)
-                            Log.Error("Loading image failed. Image at '" + imgArea.filename + "' not found.");
-                        else {
-                            Log.Error("Loading image failed with error: '" + e.Message + "'");
-                        }
+                        Log.Error("Loading image failed with error: '" + e.Message + "'");
                         Log.Error("Loading image failed.");
                         canvas.RestoreState();
                         continue;
                     }
 
+                    if (sysImg == null) {
+                        Log.Error("Loading image failed.");
+                        canvas.RestoreState();
+                        continue;
+                    }
 
-                    // fix exif orientation
-                    ExifRotate(sysImg);
+                    // EXIF orientation already applied in Mcfx.getSystemImageForFilename
 
                     // calculate resizing factor, results in equal pixel density for all images.
                     float scale = 1f / imgArea.scale * Config.ImgScale; // the higher this value, the lower pixel density is. 0.0f = original resolution
                     scale = scale < 1.0f ? 1.0f : scale; // never scale image up
 
-                    System.Drawing.Size newSize = new System.Drawing.Size((int)(sysImg.Width / scale), (int)(sysImg.Height / scale));
+                    int newW = (int)(sysImg.Width / scale);
+                    int newH = (int)(sysImg.Height / scale);
 
                     // resize image
-                    sysImg = (System.Drawing.Image)(new System.Drawing.Bitmap(sysImg, newSize));
+                    sysImg = sysImg.Resize(new SKImageInfo(newW, newH), SKFilterQuality.Medium);
 
                     Image img = sysImageToITextImage(sysImg);
 
@@ -263,8 +269,7 @@ namespace Cewe2pdf {
 
                     string imgType = area is ImageBackgroundArea ? "ImageBackground" : "Image";
                     Log.Info("Rendering " + imgType + " (." + imgArea.filename.Split(".").Last() + "): " +
-                        "original: " + sysImg.Width + "x" + sysImg.Height + "; " +
-                        "scaled: " + newSize.Width + "x" + newSize.Height + "; " +
+                        "scaled: " + newW + "x" + newH + "; " +
                         "cropped: " + (int)cropped.Width + "x" + (int)cropped.Height + "; " +
                         "at: " + (int)cropped.AbsoluteX + ", " + (int)cropped.AbsoluteY);
 
@@ -281,13 +286,9 @@ namespace Cewe2pdf {
                         // calc border rect
                         Rectangle rect = new Rectangle(pX, pY, pX + imgArea.rect.Width, pY + imgArea.rect.Height);
 
-                        // convert .mcf's html style color hex code to Color, based on: https://stackoverflow.com/a/2109904
-                        int argb = Int32.Parse(imgArea.borderColor.Replace("#", ""), System.Globalization.NumberStyles.HexNumber);
-                        System.Drawing.Color clr = System.Drawing.Color.FromArgb(argb);
-
                         // configure border
                         rect.Border = 1 | 2 | 4 | 8;
-                        rect.BorderColor = new BaseColor(clr);
+                        rect.BorderColor = argb2BaseColor(imgArea.borderColor);
                         rect.BorderWidth = imgArea.borderWidth;
 
                         // draw border
@@ -399,13 +400,10 @@ namespace Cewe2pdf {
             float PAGE_NR_HEIGHT = PAGE_NR_FONT_SIZE + 12.0f; // add some extra space... this is needed.
             float PAGE_Y_POS = Page.pageNoMargin.Y + PAGE_NR_Y_OFFSET;
 
-            // TODO de-duplicate all these conversions and move to helper method
-            // convert .mcf's html style color hex code to Color, based on: https://stackoverflow.com/a/2109904
-            int argb_ = Int32.Parse(Page.pageNoColor.Replace("#", ""), System.Globalization.NumberStyles.HexNumber);
-            System.Drawing.Color clr_ = System.Drawing.Color.FromArgb(argb_);
+            BaseColor pageNoColor = argb2BaseColor(Page.pageNoColor);
 
             // left
-            Paragraph pageNoLeft = new Paragraph(pPage.pageNoLeft, FontFactory.GetFont(Page.pageNoFont, PAGE_NR_FONT_SIZE, new BaseColor(clr_)));
+            Paragraph pageNoLeft = new Paragraph(pPage.pageNoLeft, FontFactory.GetFont(Page.pageNoFont, PAGE_NR_FONT_SIZE, pageNoColor));
             pageNoLeft.Alignment = Element.ALIGN_LEFT + Element.ALIGN_BOTTOM;
 
             ColumnText leftNo = new ColumnText(_writer.DirectContent);
@@ -421,7 +419,7 @@ namespace Cewe2pdf {
             //_writer.DirectContent.Rectangle(leftNoRect);
 
             // right
-            Paragraph pageNoRight = new Paragraph(pPage.pageNoRight, FontFactory.GetFont(Page.pageNoFont, PAGE_NR_FONT_SIZE, new BaseColor(clr_)));
+            Paragraph pageNoRight = new Paragraph(pPage.pageNoRight, FontFactory.GetFont(Page.pageNoFont, PAGE_NR_FONT_SIZE, pageNoColor));
             pageNoRight.Alignment = Element.ALIGN_RIGHT;
 
             ColumnText rightNo = new ColumnText(_writer.DirectContent);
@@ -457,56 +455,47 @@ namespace Cewe2pdf {
             _fileStream.Close();
         }
 
-        public System.Drawing.RotateFlipType ExifRotate(System.Drawing.Image img) {
-            // for some reason iText does not respect orientation stored in metadata as it seams...
-            // try to fix it with this weird stuff...
-            // based on https://www.cyotek.com/blog/handling-the-orientation-exif-tag-in-images-using-csharp
+        public static SKBitmap ExifRotate(SKBitmap img, SKEncodedOrigin origin) {
+            // iText does not respect EXIF orientation — apply it manually via SkiaSharp
+            bool swapDims = origin == SKEncodedOrigin.LeftTop || origin == SKEncodedOrigin.RightTop ||
+                            origin == SKEncodedOrigin.LeftBottom || origin == SKEncodedOrigin.RightBottom;
+            int w = swapDims ? img.Height : img.Width;
+            int h = swapDims ? img.Width : img.Height;
 
-            const int exifOrientationID = 0x112; //274
+            var rotated = new SKBitmap(w, h);
+            using var canvas = new SKCanvas(rotated);
+            canvas.Clear();
 
-            if (!img.PropertyIdList.Contains(exifOrientationID)) {
-                return System.Drawing.RotateFlipType.RotateNoneFlipNone;
+            switch (origin) {
+                case SKEncodedOrigin.BottomRight:
+                    canvas.RotateDegrees(180, w / 2f, h / 2f); break;
+                case SKEncodedOrigin.RightTop:
+                    canvas.Translate(w, 0); canvas.RotateDegrees(90); break;
+                case SKEncodedOrigin.LeftBottom:
+                    canvas.Translate(0, h); canvas.RotateDegrees(270); break;
+                case SKEncodedOrigin.TopRight:
+                    canvas.Scale(-1, 1, w / 2f, h / 2f); break;
+                case SKEncodedOrigin.BottomLeft:
+                    canvas.Scale(1, -1, w / 2f, h / 2f); break;
+                default: break;
             }
-
-            var prop = img.GetPropertyItem(exifOrientationID);
-            int val = BitConverter.ToUInt16(prop.Value, 0);
-            var rot = System.Drawing.RotateFlipType.RotateNoneFlipNone;
-
-            if (val == 3 || val == 4)
-                rot = System.Drawing.RotateFlipType.Rotate180FlipNone;
-            else if (val == 5 || val == 6)
-                rot = System.Drawing.RotateFlipType.Rotate90FlipNone;
-            else if (val == 7 || val == 8)
-                rot = System.Drawing.RotateFlipType.Rotate270FlipNone;
-
-            if (val == 2 || val == 4 || val == 5 || val == 7)
-                rot |= System.Drawing.RotateFlipType.RotateNoneFlipX;
-
-            if (rot != System.Drawing.RotateFlipType.RotateNoneFlipNone)
-                img.RotateFlip(rot);
-
-            return rot;
+            canvas.DrawBitmap(img, 0, 0);
+            return rotated;
         }
 
         public static BaseColor argb2BaseColor(string color) {
-            //// convert .mcf's html style color hex code to Color, based on: https://stackoverflow.com/a/2109904
             int argb = Int32.Parse(color.Replace("#", ""), System.Globalization.NumberStyles.HexNumber);
-            System.Drawing.Color clr = System.Drawing.Color.FromArgb(argb);
-            return new BaseColor(clr);
+            byte a = (byte)((argb >> 24) & 0xFF);
+            byte r = (byte)((argb >> 16) & 0xFF);
+            byte g = (byte)((argb >> 8) & 0xFF);
+            byte b = (byte)(argb & 0xFF);
+            return new BaseColor(r, g, b, a);
         }
 
-        private static iTextSharp.text.Image sysImageToITextImage(System.Drawing.Image pImg) {
-            try {
-                using (var ms = new MemoryStream()) {
-                    pImg.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
-                    byte[] bytes = ms.ToArray();
-                    return Image.GetInstance(bytes);
-                }
-            } catch (Exception e) {
-                Log.Error("Converting image failed with error: '" + e.Message + "'. Falling back to temp.jpg.");
-                pImg.Save("temp.jpg");
-                return Image.GetInstance("temp.jpg");
-            }
+        private static iTextSharp.text.Image sysImageToITextImage(SKBitmap pImg) {
+            using var image = SKImage.FromBitmap(pImg);
+            using var data = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+            return Image.GetInstance(data.ToArray());
         }
     }
 }

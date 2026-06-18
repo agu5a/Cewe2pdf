@@ -1,12 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.Drawing;
+using System.IO;
 using System.Linq;
+using SkiaSharp;
 
 namespace Cewe2pdf {
     class DesignIdConverter {
 
-        private static Dictionary<string, Image> _imageCache = new Dictionary<string, Image>();
+        private static Dictionary<string, SKBitmap> _imageCache = new Dictionary<string, SKBitmap>();
 
         private static string getPath(string pId) {
             string path;
@@ -28,16 +29,13 @@ namespace Cewe2pdf {
         }
 
         private static string getIdPathFromDirectory(string pId, string pDirectory) {
-            // scan whole folder for image files
-            if (System.IO.Directory.Exists(pDirectory)) {
-                string[] filenames = System.IO.Directory.GetFiles(pDirectory, "*", System.IO.SearchOption.AllDirectories);
+            if (Directory.Exists(pDirectory)) {
+                string[] filenames = Directory.GetFiles(pDirectory, "*", SearchOption.AllDirectories);
                 Log.Info("Loading DesignIDs from '" + pDirectory + "'.");
                 foreach (string addfile in filenames) {
                     if (addfile.EndsWith(".jpg") || addfile.EndsWith(".bmp") || addfile.EndsWith(".webp")) {
-                        string id = addfile.Split("\\").Last().Split(".").First();
-                        //Log.Info("Register ID: " + id + " at: " + line);
-                        id = id.Split("-").Last(); // some ids have names... keep only the id number...
-                        //Log.Info("\t found id: '" + id + "' at: '" + addfile + "'");
+                        string id = Path.GetFileNameWithoutExtension(addfile);
+                        id = id.Split("-").Last();
                         if (id == pId)
                             return addfile;
                     }
@@ -49,19 +47,17 @@ namespace Cewe2pdf {
         }
 
         private static string getIdPathFromProgramData(string pId) {
-            // scan dynamic download folder for matching design ids
-            const string dlpath = "C:\\ProgramData\\hps";
-            return getIdPathFromDirectory(pId, dlpath);
+            if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+                return null;
+            return getIdPathFromDirectory(pId, "C:\\ProgramData\\hps");
         }
 
         public static string getIdPathFromInstallationDirectly(string pId) {
-            // directly scans the installtion folder for matching design ids
-            string path = Config.ProgramPath + "\\Resources\\photofun\\backgrounds";
+            string path = Path.Combine(Config.ProgramPath, "Resources", "photofun", "backgrounds");
             return getIdPathFromDirectory(pId, path);
         }
-        
 
-        public static Image getImageFromID(string pId) {
+        public static SKBitmap getImageFromID(string pId) {
             if (_imageCache.ContainsKey(pId)) {
                 Log.Info("Using cached image for Design ID '" + pId + "'");
                 return _imageCache[pId];
@@ -74,39 +70,28 @@ namespace Cewe2pdf {
                 return null;
             }
 
-            if (!System.IO.File.Exists(path)) {
+            if (!File.Exists(path)) {
                 Log.Error("DesignID file at: '" + path + "' does not exist.");
                 return null;
             } else {
-                Log.Info("Loading DesignID: " + path.Split("/").Last());
+                Log.Info("Loading DesignID: " + Path.GetFileName(path));
             }
 
-            if (path.EndsWith(".webp")) {
-                // load webp
-                try {
-                    WebPWrapper.WebP webP = new WebPWrapper.WebP();
-                    Image bm = webP.Load(path);
-                    addToImageCache(pId, bm);
-                    return bm;
-                } catch (Exception e) {
-                    Log.Error("Loading '" + path + "' failed with error: '" + e.Message + "'.");
+            try {
+                SKBitmap bm = SKBitmap.Decode(path);
+                if (bm == null) {
+                    Log.Error("Loading '" + path + "' failed: SKBitmap.Decode returned null.");
                     return null;
                 }
-            } else {
-                // load image
-                try {
-                    Image bm = Image.FromFile(path);
-                    addToImageCache(pId, bm);
-                    return bm;
-                } catch (Exception e) {
-                    Log.Error("Loading '" + path + "' failed with error: '" + e.Message + "'.");
-                    return null;
-                }
+                addToImageCache(pId, bm);
+                return bm;
+            } catch (Exception e) {
+                Log.Error("Loading '" + path + "' failed with error: '" + e.Message + "'.");
+                return null;
             }
         }
 
-        private static void addToImageCache(string pId, Image pImg) {
-            // TODO: add a (memory) limit to cache size?
+        private static void addToImageCache(string pId, SKBitmap pImg) {
             _imageCache.Add(pId, pImg);
         }
     }

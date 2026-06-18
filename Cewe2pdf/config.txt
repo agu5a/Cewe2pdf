@@ -1,0 +1,1 @@
+program_path=/Applications/CEWE Fotowelt.app/Contents
